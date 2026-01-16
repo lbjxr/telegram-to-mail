@@ -14,7 +14,15 @@ DB_NAME = os.getenv('MARIADB_DATABASE', 'telegram_bot')
 USE_DB = all([DB_HOST, DB_USER, DB_PASS])
 
 # 本地文件路径定义
-DATA_DIR = './data' if os.path.exists('./data') else '.'
+# 优先使用 /app/data 目录（Docker 环境）
+# 兼容符号链接方式（entrypoint.sh 创建）和直接访问方式
+if os.path.exists('/app/data'):
+    DATA_DIR = '/app/data'
+elif os.path.exists('./data'):
+    DATA_DIR = './data'
+else:
+    DATA_DIR = '.'
+
 FILES = {
     'config': os.path.join(DATA_DIR, 'config.json'),
     'schedule_state': os.path.join(DATA_DIR, 'schedule_state.json'),
@@ -100,13 +108,27 @@ def save_data(key, data):
         except Exception as e:
             print(f"[Storage] Save Error ({key}): {e}")
     else:
-        # 文件模式
+        # 文件模式 - 使用原子写入防止并发问题
         file_path = FILES.get(key)
+        temp_path = file_path + '.tmp'
         try:
-            with open(file_path, 'w', encoding='utf-8') as f:
+            # 先写入临时文件
+            with open(temp_path, 'w', encoding='utf-8') as f:
                 if key == 'session':
                     f.write(data)
                 else:
                     json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())  # 确保写入磁盘
+            
+            # 然后原子性地重命名（替换）目标文件
+            os.replace(temp_path, file_path)
         except Exception as e:
             print(f"[Storage] File Write Error ({key}): {e}")
+            # 清理临时文件
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+
