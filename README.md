@@ -64,7 +64,7 @@ cd telegram-to-mail
 version: '3.8'
 services:
   telegram-to-mail:
-    image: ghcr.io/workerspages/telegram-to-mail:mariadb
+    image: ghcr.io/workerspages/telegram-to-mail:mariadb-lottery
     container_name: telegram-to-mail
     restart: unless-stopped
     ports:
@@ -76,6 +76,11 @@ services:
       
       - API_ID=123456789                    # 可选：如果只用爬虫或Bot功能，可不填
       - API_HASH=123456789abcd              # 可选：如果只用爬虫或Bot功能，可不填
+
+      # 可选：通过环境变量传入 Session（适用于不支持文件上传的 PaaS 平台）
+      # 值为 session.string 文件内容的 Base64 编码
+      # 生成方法: base64 -w 0 session.string
+  #   - SESSION_STRING=MUJRQU5PVEUuMTA4...
 
       # 要启用 Cloudflare Tunnel 功能，请取消下面一行的注释，并粘贴您的 Token。
       # 如果此行被注释或值为空，则容器启动时不会启用 Tunnel 功能。
@@ -91,7 +96,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
 ```
 ```bash
 docker-compose up -d
@@ -117,6 +121,7 @@ docker-compose up -d
     *   `WEB_PASSWORD`: admin123
     *   `API_ID`: 12345678          (可选：如果只用爬虫或Bot功能，可不填)
     *   `API_HASH`: xxxxxxxxx       (可选：如果只用爬虫或Bot功能，可不填)
+    *   `SESSION_STRING`: MUJRQU5PVEUuMTA4... (可选：Base64 编码的 TG 登录凭证)
 6.  **首次登录**:
     *   部署后查看容器日志（Logs）。
     *   如果配置了 `API_ID`，程序会提示输入手机号和验证码。
@@ -128,26 +133,9 @@ docker-compose up -d
 
 
 ### ✨ 在本地生成 telegram.sessio 文件的方法
+[Telegram Session 生成工具及使用方法](/tools/README.md)
 
-#### **在本地生成 Session 文件**
-1.  在您自己的电脑（Windows/Mac/Linux）上安装 Python 和 Telethon：
-    ```bash
-    pip install telethon
-    ```
-2.  创建一个临时脚本 `get_session.py`：
-    ```python
-    from telethon.sync import TelegramClient
-    api_id = 1234567  # 换成您的 API_ID
-    api_hash = 'xxxxxxxx'  # 换成您的 API_HASH
-    with TelegramClient('telegram', api_id, api_hash) as client:
-        print("登录成功！当前目录下已生成 telegram.session 文件")
-    ```
-3.  运行脚本，输入手机号和验证码。运行结束后，文件夹下会出现一个 `telegram.session` 文件。
-    `cmd` 脚本 `get_session.py` 所在目录执行以下命令：
-    
-    ```
-    python get_session.py
-    ```
+
 
 
 #### **上传到 Zeabur**

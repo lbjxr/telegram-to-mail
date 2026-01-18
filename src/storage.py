@@ -30,6 +30,43 @@ FILES = {
     'session': os.path.join(DATA_DIR, 'session.string') # 本地模式下把session string存文件方便迁移
 }
 
+# SQLite session 文件可能的路径（Telethon 默认格式）
+# 支持多个位置：优先 session_data 子目录，其次 data 根目录
+SESSION_FILE_PATHS = [
+    os.path.join(DATA_DIR, 'session_data', 'telegram.session'),  # 子目录
+    os.path.join(DATA_DIR, 'telegram.session'),                   # 根目录
+]
+
+def get_session_file_path():
+    """
+    检查 SQLite session 文件是否存在，存在则返回路径，否则返回 None
+    支持的位置: /app/data/session_data/telegram.session 或 /app/data/telegram.session
+    """
+    for path in SESSION_FILE_PATHS:
+        if os.path.exists(path):
+            return path
+    return None
+
+def get_session_from_env():
+    """
+    从环境变量读取 Base64 编码的 session string
+    环境变量名: SESSION_STRING
+    返回: 解码后的 session string，如果未设置或解码失败则返回 None
+    """
+    import base64
+    session_b64 = os.getenv('SESSION_STRING')
+    if not session_b64:
+        return None
+    
+    try:
+        # 解码 Base64
+        session_string = base64.b64decode(session_b64).decode('utf-8')
+        print("[Storage] Found SESSION_STRING in environment variable.")
+        return session_string
+    except Exception as e:
+        print(f"[Storage] Failed to decode SESSION_STRING: {e}")
+        return None
+
 def get_db_connection():
     return pymysql.connect(
         host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS,

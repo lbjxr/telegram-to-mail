@@ -201,24 +201,58 @@ async def send_delayed_reply(client, chat_id, message, reply_to=None, delay=5):
     await safe_send_message(client, chat_id, message, reply_to=reply_to, action_desc=f"Auto-Reply (init-delay {delay}s)")
 
 # --- 抽奖自动参与功能 ---
-def extract_lottery_keyword(message_text):
+# 默认支持的关键词字段名列表
+DEFAULT_KEYWORD_FIELDS = ['参与关键词', '关键词', '抽奖词', '抽奖关键词', '参与口令', '口令']
+
+def extract_lottery_keyword(message_text, keyword_fields=None):
     """
     从抽奖消息中提取参与关键词。
-    匹配格式: "关键词: 数字/数字=百分比" 例如 "支持老王！VPS8送100台小鸡第五波: 3/36=8.33%"
+    支持格式:
+    1. "字段名: 「xxx」" 或 "字段名：「xxx」" (优先匹配，带括号)
+    2. "字段名: xxx" (备选，无括号取到行尾)
+    3. "关键词: 数字/数字=百分比" 例如 "支持老王: 3/36=8.33%" (最后备选)
+    
+    参数:
+    - message_text: 消息文本
+    - keyword_fields: 自定义关键词字段名列表，如 ['参与关键词', '关键词', '抽奖词']
+    
     返回第一个匹配的关键词，如果没有匹配则返回 None。
     """
-    # 匹配 "关键词: 数字/数字=百分比" 格式
-    pattern = r'^([^:\n]+?):\s*\d+/\d+=\d+\.?\d*%'
-    matches = re.findall(pattern, message_text, re.MULTILINE)
+    if keyword_fields is None:
+        keyword_fields = DEFAULT_KEYWORD_FIELDS
+    
+    # 构建字段名的正则模式（使用 | 连接多个字段名）
+    fields_pattern = '|'.join(re.escape(field) for field in keyword_fields)
+    
+    # 优先匹配带括号格式：「」、【】、[]、"" 等
+    bracket_pattern = rf'(?:{fields_pattern})[：:]\s*[「【\[\'\"\『](.+?)[」】\]\'\"\』]'
+    bracket_match = re.search(bracket_pattern, message_text)
+    if bracket_match:
+        keyword = bracket_match.group(1).strip()
+        print(f"[Lottery] Extracted participation keyword (bracket format): '{keyword}'")
+        return keyword
+    
+    # 备选：无括号格式，取到行尾
+    plain_pattern = rf'(?:{fields_pattern})[：:]\s*(.+?)$'
+    plain_match = re.search(plain_pattern, message_text, re.MULTILINE)
+    if plain_match:
+        keyword = plain_match.group(1).strip()
+        # 移除可能的尾随括号
+        keyword = re.sub(r'^[「【\[\'\"\『]|[」】\]\'\"\』]$', '', keyword)
+        if keyword:
+            print(f"[Lottery] Extracted participation keyword (plain format): '{keyword}'")
+            return keyword
+    
+    # 最后备选：匹配 "关键词: 数字/数字=百分比" 格式
+    stats_pattern = r'^([^:\n]+?):\s*\d+/\d+=\d+\.?\d*%'
+    matches = re.findall(stats_pattern, message_text, re.MULTILINE)
     
     if matches:
-        # 返回第一个不是明显系统字段的关键词
         system_keywords = ['抽奖ID', '发起人', '参与人数', '截止日期', '中奖概率', '抽奖信息']
         for match in matches:
             keyword = match.strip()
-            # 跳过系统字段
             if not any(sys_kw in keyword for sys_kw in system_keywords):
-                print(f"[Lottery] Extracted participation keyword: '{keyword}'")
+                print(f"[Lottery] Extracted participation keyword (stats format): '{keyword}'")
                 return keyword
     
     return None
@@ -240,8 +274,11 @@ async def handle_lottery_auto_reply(client, event, lottery_config, message_text)
     
     print(f"[Lottery] Lottery message detected in chat {event.chat_id}")
     
+    # 从配置获取自定义提取字段名（如果未配置则使用默认值）
+    extract_fields = lottery_config.get('extract_fields')
+    
     # 提取参与关键词
-    participation_keyword = extract_lottery_keyword(message_text)
+    participation_keyword = extract_lottery_keyword(message_text, extract_fields)
     if not participation_keyword:
         print(f"[Lottery] Could not extract participation keyword from message")
         return False
@@ -269,22 +306,32 @@ async def handle_lottery_auto_reply(client, event, lottery_config, message_text)
 # --- 核心消息处理逻辑 ---
 async def process_notifications(config, notifiers_list, subject, body):
     """处理并发送一组通知"""
+    print(f"[Notify] Processing {len(notifiers_list)} notifiers: {notifiers_list}")
     for nid in notifiers_list:
         try:
+            print(f"[Notify] Processing notifier: {nid}")
             if nid.startswith('bark'):
                 bark_details = get_bark_details(config, nid)
                 if bark_details and bark_details.get('token'):
                     server_url = bark_details.get('server_url') or "https://api.day.app"
                     await send_bark(server_url, bark_details['token'], subject, body)
+                else:
+                    print(f"[Notify] Bark notifier '{nid}' not found in config")
 
             elif nid.startswith('pushplus'):
                 token = get_pushplus_token(config, nid)
                 if token:
                     await send_pushplus(token, subject, body)
+                else:
+                    print(f"[Notify] Pushplus notifier '{nid}' not found in config")
                     
             elif nid == "email":
                 if 'email' in config.get('notifiers', {}):
                     await send_email(config['notifiers']['email'], subject, body)
+                else:
+                    print(f"[Notify] Email notifier not configured")
+            else:
+                print(f"[Notify] Unknown notifier type: {nid}")
         except Exception as e:
             print(f"[ERROR] Failed to process notifier '{nid}'. Reason: {e}")
 
@@ -435,6 +482,8 @@ async def scraper_task_worker():
                                         msg_hash = hashlib.md5(latest_text.encode('utf-8')).hexdigest()
                                         last_hash = scraper_state.get(username)
                                         
+                                        print(f"[Scraper] @{username}: hash={msg_hash[:8]}..., last={last_hash[:8] if last_hash else 'None'}...")
+                                        
                                         if msg_hash != last_hash:
                                             print(f"[Scraper] New message found in @{username}")
                                             
@@ -442,6 +491,10 @@ async def scraper_task_worker():
                                             save_scraper_state(scraper_state)
                                             
                                             notifiers = channel.get('notifiers', [])
+                                            print(f"[Scraper] @{username} notifiers: {notifiers}")
+                                            
+                                            if not notifiers:
+                                                print(f"[Scraper] WARNING: No notifiers configured for @{username}")
                                             
                                             display_name = channel.get('name')
                                             if not display_name:
@@ -451,8 +504,9 @@ async def scraper_task_worker():
                                             body = f"{latest_text}\n\n(来源: Web Preview)"
                                             
                                             await process_notifications(config, notifiers, subject, body)
+                                            print(f"[Scraper] Notifications sent for @{username}")
                                     else:
-                                        pass
+                                        print(f"[Scraper] No messages found on page for @{username}")
                                 else:
                                     print(f"[Scraper] Failed to fetch {url}, status: {resp.status}")
 
@@ -573,9 +627,6 @@ async def main():
     api_id = os.getenv('API_ID')
     api_hash = os.getenv('API_HASH')
     
-    # 尝试从存储层加载 Session String
-    saved_session_string = storage.load_data('session')
-
     # 情况 A: 环境变量缺失
     if not api_id or not api_hash:
         print("Warning: API_ID/HASH not set. Telegram Client mode disabled. Only Web Scraper will work.")
@@ -583,15 +634,30 @@ async def main():
             await asyncio.sleep(3600)
         return
 
-    # 情况 B: Client 初始化 (使用 StringSession)
-    if not saved_session_string:
-        print("Notice: No saved session found. Initializing new login (StringSession)...")
-        # 没有 Session 字符串，初始化为空，启动后需扫码
-        client = TelegramClient(StringSession(), int(api_id), api_hash)
-    else:
-        print("Found saved session in storage. Logging in...")
+    # 情况 B: Client 初始化 (支持多种 Session 格式)
+    # 优先级: 1. 环境变量SESSION_STRING(Base64) > 2. SQLite文件(telegram.session) > 3. StringSession文件(session.string)
+    
+    # 检查各种 session 来源
+    env_session_string = storage.get_session_from_env()  # 环境变量 (Base64)
+    session_file_path = storage.get_session_file_path()   # SQLite 文件
+    saved_session_string = storage.load_data('session')   # StringSession 文件
+    
+    if env_session_string:
+        print("Using session from environment variable (SESSION_STRING)...")
+        client = TelegramClient(StringSession(env_session_string), int(api_id), api_hash)
+    elif session_file_path:
+        print(f"Found SQLite session file: {session_file_path}. Using file-based session...")
+        # 使用 SQLite 文件 session（不带 .session 后缀）
+        session_name = session_file_path.replace('.session', '')
+        client = TelegramClient(session_name, int(api_id), api_hash)
+    elif saved_session_string:
+        print("Found saved StringSession in storage. Logging in...")
         # 从字符串恢复 Session
         client = TelegramClient(StringSession(saved_session_string), int(api_id), api_hash)
+    else:
+        print("Notice: No saved session found. Initializing new login (StringSession)...")
+        # 没有 Session，初始化为空，启动后需扫码
+        client = TelegramClient(StringSession(), int(api_id), api_hash)
 
     try:
         @client.on(events.NewMessage)
